@@ -72,36 +72,50 @@ jobs:
           wget -q https://raw.githubusercontent.com/PaddlePaddle/PaddleOCR/release/2.7/ppocr/utils/ppocr_keys_v1.txt
           echo "Dictionary lines: $(wc -l < ppocr_keys_v1.txt)"
 
-      # ── 5. 下载 Paddle Lite Java AAR ─────────────────────────────────────
-      - name: Download Paddle Lite Java AAR
+            # ── 5. 下载 Paddle Lite Java 库（jar + so）────────────────────────────
+      - name: Download Paddle Lite Java library
         run: |
-          # 从 Paddle Lite v2.12 release 下载 Android Java 预测库
           wget -q https://github.com/PaddlePaddle/Paddle-Lite/releases/download/v2.12/inference_lite_lib.android.armv8.gcc.c++_shared.with_extra.with_cv.tar.gz \
             -O paddle_lite_android.tar.gz
           tar xf paddle_lite_android.tar.gz
-          
-          # 找到 jar 和 so 文件
-          echo "=== Java library files ==="
-          find . -name "PaddlePredictor.jar" -o -name "libpaddle_lite_jni.so" 2>/dev/null | head -20
+
+          echo "=== All extracted files ==="
+          find inference_lite_lib* -type f | sort
 
       # ── 6. 整理所有文件到一个目录 ─────────────────────────────────────────
       - name: Collect all files
         run: |
           mkdir -p paddle_ocr_assets/models
           mkdir -p paddle_ocr_assets/java_lib/arm64-v8a
-          mkdir -p paddle_ocr_assets/java_lib/armeabi-v7a
 
-          # 复制 .nb 模型
+          # 复制 .nb 模型 + 字典
           cp *.nb paddle_ocr_assets/models/
           cp ppocr_keys_v1.txt paddle_ocr_assets/models/
 
-          # 复制 Java 库（jar + so）
-          find . -name "PaddlePredictor.jar" -exec cp {} paddle_ocr_assets/java_lib/ \; 2>/dev/null || true
-          find . -path "*/arm64-v8a/libpaddle_lite_jni.so" -exec cp {} paddle_ocr_assets/java_lib/arm64-v8a/ \; 2>/dev/null || true
-          find . -path "*/armeabi-v7a/libpaddle_lite_jni.so" -exec cp {} paddle_ocr_assets/java_lib/armeabi-v7a/ \; 2>/dev/null || true
+          # 复制 PaddlePredictor.jar
+          JAR=$(find . -name "PaddlePredictor.jar" | head -1)
+          if [ -n "$JAR" ]; then
+            cp "$JAR" paddle_ocr_assets/java_lib/
+            echo "Copied jar: $JAR"
+          else
+            echo "WARNING: PaddlePredictor.jar not found"
+          fi
+
+          # 复制 arm64-v8a 的 libpaddle_lite_jni.so
+          SO=$(find . -path "*/arm64-v8a/libpaddle_lite_jni.so" | head -1)
+          if [ -n "$SO" ]; then
+            cp "$SO" paddle_ocr_assets/java_lib/arm64-v8a/
+            echo "Copied so: $SO"
+          else
+            echo "WARNING: libpaddle_lite_jni.so not found, trying any .so"
+            find . -name "libpaddle_lite_jni.so" | head -5
+          fi
 
           echo "=== Final assets ==="
           find paddle_ocr_assets -type f | sort
+          echo "=== File sizes ==="
+          find paddle_ocr_assets -type f -exec ls -lh {} \;
+
 
       # ── 7. 上传为 artifact（供下载）──────────────────────────────────────
       - name: Upload paddle_ocr_assets
