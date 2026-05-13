@@ -1,0 +1,112 @@
+name: Convert PaddleOCR Models to .nb
+
+on:
+  workflow_dispatch:   # 手动触发，点按钮就行
+
+jobs:
+  convert:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.9'
+
+      # ── 1. 安装 paddlelite（Linux x86_64 有预编译包）──────────────────────
+      - name: Install paddlelite
+        run: pip install paddlepaddle paddlelite
+
+      # ── 2. 下载三个 inference 模型（百度 BOS，Linux 环境可访问）────────────
+      - name: Download PP-OCRv3 inference models
+        run: |
+          # 检测模型
+          wget -q https://paddleocr.bj.bcebos.com/PP-OCRv3/chinese/ch_PP-OCRv3_det_slim_infer.tar
+          tar xf ch_PP-OCRv3_det_slim_infer.tar
+
+          # 识别模型
+          wget -q https://paddleocr.bj.bcebos.com/PP-OCRv3/chinese/ch_PP-OCRv3_rec_slim_infer.tar
+          tar xf ch_PP-OCRv3_rec_slim_infer.tar
+
+          # 方向分类模型（v2.0，v3 没有单独的 cls 模型）
+          wget -q https://paddleocr.bj.bcebos.com/dygraph_v2.0/slim/ch_ppocr_mobile_v2.0_cls_slim_infer.tar
+          tar xf ch_ppocr_mobile_v2.0_cls_slim_infer.tar
+
+          echo "=== Downloaded files ==="
+          ls -la
+
+      # ── 3. 转换为 .nb 格式 ────────────────────────────────────────────────
+      - name: Convert models to .nb (Paddle Lite format)
+        run: |
+          # 检测模型
+          paddle_lite_opt \
+            --model_file=ch_PP-OCRv3_det_slim_infer/inference.pdmodel \
+            --param_file=ch_PP-OCRv3_det_slim_infer/inference.pdiparams \
+            --optimize_out=ch_PP-OCRv3_det_slim_opt \
+            --valid_targets=arm \
+            --optimize_out_type=naive_buffer
+
+          # 识别模型
+          paddle_lite_opt \
+            --model_file=ch_PP-OCRv3_rec_slim_infer/inference.pdmodel \
+            --param_file=ch_PP-OCRv3_rec_slim_infer/inference.pdiparams \
+            --optimize_out=ch_PP-OCRv3_rec_slim_opt \
+            --valid_targets=arm \
+            --optimize_out_type=naive_buffer
+
+          # 方向分类模型
+          paddle_lite_opt \
+            --model_file=ch_ppocr_mobile_v2.0_cls_slim_infer/inference.pdmodel \
+            --param_file=ch_ppocr_mobile_v2.0_cls_slim_infer/inference.pdiparams \
+            --optimize_out=ch_ppocr_mobile_v2.0_cls_slim_opt \
+            --valid_targets=arm \
+            --optimize_out_type=naive_buffer
+
+          echo "=== Converted .nb files ==="
+          ls -lh *.nb
+
+      # ── 4. 下载字典文件 ───────────────────────────────────────────────────
+      - name: Download dictionary file
+        run: |
+          wget -q https://raw.githubusercontent.com/PaddlePaddle/PaddleOCR/release/2.7/ppocr/utils/ppocr_keys_v1.txt
+          echo "Dictionary lines: $(wc -l < ppocr_keys_v1.txt)"
+
+      # ── 5. 下载 Paddle Lite Java AAR ─────────────────────────────────────
+      - name: Download Paddle Lite Java AAR
+        run: |
+          # 从 Paddle Lite v2.12 release 下载 Android Java 预测库
+          wget -q https://github.com/PaddlePaddle/Paddle-Lite/releases/download/v2.12/inference_lite_lib.android.armv8.gcc.c++_shared.with_extra.with_cv.tar.gz \
+            -O paddle_lite_android.tar.gz
+          tar xf paddle_lite_android.tar.gz
+          
+          # 找到 jar 和 so 文件
+          echo "=== Java library files ==="
+          find . -name "PaddlePredictor.jar" -o -name "libpaddle_lite_jni.so" 2>/dev/null | head -20
+
+      # ── 6. 整理所有文件到一个目录 ─────────────────────────────────────────
+      - name: Collect all files
+        run: |
+          mkdir -p paddle_ocr_assets/models
+          mkdir -p paddle_ocr_assets/java_lib/arm64-v8a
+          mkdir -p paddle_ocr_assets/java_lib/armeabi-v7a
+
+          # 复制 .nb 模型
+          cp *.nb paddle_ocr_assets/models/
+          cp ppocr_keys_v1.txt paddle_ocr_assets/models/
+
+          # 复制 Java 库（jar + so）
+          find . -name "PaddlePredictor.jar" -exec cp {} paddle_ocr_assets/java_lib/ \; 2>/dev/null || true
+          find . -path "*/arm64-v8a/libpaddle_lite_jni.so" -exec cp {} paddle_ocr_assets/java_lib/arm64-v8a/ \; 2>/dev/null || true
+          find . -path "*/armeabi-v7a/libpaddle_lite_jni.so" -exec cp {} paddle_ocr_assets/java_lib/armeabi-v7a/ \; 2>/dev/null || true
+
+          echo "=== Final assets ==="
+          find paddle_ocr_assets -type f | sort
+
+      # ── 7. 上传为 artifact（供下载）──────────────────────────────────────
+      - name: Upload paddle_ocr_assets
+        uses: actions/upload-artifact@v4
+        with:
+          name: paddle-ocr-assets
+          path: paddle_ocr_assets/
+          retention-days: 7
